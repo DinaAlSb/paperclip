@@ -72,6 +72,17 @@ async function waitForUi(assertion: () => void) {
   });
 }
 
+async function waitForRetryButtonText(expected: string) {
+  for (let i = 0; i < 20; i += 1) {
+    if ((getRetryNowButton()?.textContent ?? "").includes(expected)) return;
+    // eslint-disable-next-line no-await-in-loop
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+  expect(getRetryNowButton()!.textContent ?? "").toContain(expected);
+}
+
 function renderWithProviders(ui: ReactNode) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -110,6 +121,22 @@ function getRetryNowButton() {
 }
 
 describe("IssueScheduledRetryCard", () => {
+  it("shows workspace contention as an automatic wait without failure or retry controls", () => {
+    renderWithProviders(<IssueScheduledRetryCard issueId="issue-1" scheduledRetry={{ ...baseRetry, scheduledRetryReason: "workspace_busy" }} />);
+    expect(container.textContent).toContain("Waiting for workspace");
+    expect(container.textContent).toContain("Work starts automatically");
+    expect(container.textContent).not.toMatch(/failed|Retry|Attempt|Replaces run/);
+    expect(getRetryNowButton()).toBeNull();
+  });
+  it("surfaces model capacity and the automatic retry without a generic failure", () => {
+    renderWithProviders(<IssueScheduledRetryCard issueId="issue-1" scheduledRetry={{ ...baseRetry, scheduledRetryAttempt: 1, scheduledRetryReason: "native_provider_overloaded",
+      error: "Selected model is at capacity. Please try a different model.", errorCode: "native_provider_overloaded" }} />);
+    expect(container.textContent).toContain("Model at capacity");
+    expect(container.textContent).toContain("Selected model is at capacity");
+    expect(container.textContent).toContain("Paperclip will retry automatically");
+    expect(container.textContent).not.toContain("Native session failed");
+  });
+
   it("renders nothing when there is no scheduled retry", () => {
     renderWithProviders(<IssueScheduledRetryCard issueId="issue-1" scheduledRetry={null} />);
     expect(getCard()).toBeNull();
@@ -174,12 +201,11 @@ describe("IssueScheduledRetryCard", () => {
     act(() => {
       button!.click();
     });
-    await waitForUi(() => {
-      expect(retryNowMock).toHaveBeenCalledWith("issue-1");
-      const finalButton = getRetryNowButton();
-      expect(finalButton!.textContent ?? "").toContain("Promoted");
-      expect(finalButton!.disabled).toBe(true);
-    });
+    await waitForRetryButtonText("Promoted");
+    expect(retryNowMock).toHaveBeenCalledWith("issue-1");
+    const finalButton = getRetryNowButton();
+    expect(finalButton!.textContent ?? "").toContain("Promoted");
+    expect(finalButton!.disabled).toBe(true);
   });
 
   it("shows already promoted state when backend reports duplicate click", async () => {
@@ -190,8 +216,20 @@ describe("IssueScheduledRetryCard", () => {
     act(() => {
       getRetryNowButton()!.click();
     });
+    await waitForRetryButtonText("Already promoted");
+    expect(getRetryNowButton()!.textContent ?? "").toContain("Already promoted");
+    expect(container.querySelector('[data-testid="issue-scheduled-retry-error-band"]')).toBeNull();
+  });
+
+  it("shows cleanup waiting without claiming success or disabling Retry now", async () => {
+    const message = "Waiting for execution cleanup. Paperclip will retry automatically once cleanup finishes.";
+    retryNowMock.mockResolvedValue({ outcome: "waiting", message, scheduledRetry: baseRetry });
+    renderWithProviders(<IssueScheduledRetryCard issueId="issue-1" scheduledRetry={baseRetry} />);
+    act(() => { getRetryNowButton()!.click(); });
     await waitForUi(() => {
-      expect(getRetryNowButton()!.textContent ?? "").toContain("Already promoted");
+      expect(getCard()?.textContent).toContain(message);
+      expect(getCard()?.textContent).not.toContain("run starting");
+      expect(getRetryNowButton()!.disabled).toBe(false);
       expect(container.querySelector('[data-testid="issue-scheduled-retry-error-band"]')).toBeNull();
     });
   });
